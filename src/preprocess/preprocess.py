@@ -1,10 +1,4 @@
-"""
-Text preprocessing:
-- Sentence splitting
-- Cleaning
-- Summary sentence alignment with similarity threshold
-"""
-
+# src/preprocess.py
 import os
 import json
 import glob
@@ -12,22 +6,29 @@ import nltk
 import re
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer, util
-import torch
-_SBERT_MODEL = None
-nltk.download('punkt')
+from rouge_score import rouge_scorer
 
+# 确保下载了 punkt 分词器
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+# =================配置区域=================
 RAW_CNN_PATH = "data/raw/cnn/stories/"
 RAW_DM_PATH = "data/raw/dailymail/stories/"
 OUTPUT_DIR = "data/processed/"
+
+# 全局 ROUGE 打分器 (ROUGE-1, 2, L)
+_ROUGE_SCORER = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+
+
+# =========================================
 
 # --------------------------
 # 文本清洗
 # --------------------------
 def clean_text(text):
-    # 去除来源来源标记
     patterns = [
         r"\(CNN\)", r"\[CNN\]", r"cnn", r"CNN",
         r"\(Reuters\)", r"\[Reuters\]",
@@ -35,8 +36,6 @@ def clean_text(text):
     ]
     for p in patterns:
         text = re.sub(p, "", text, flags=re.IGNORECASE)
-
-    # 去除多余空格
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -45,7 +44,6 @@ def clean_text(text):
 # 缩写保护：避免误切分
 # --------------------------
 def protect_abbreviations(text):
-    # 将缩写暂时替换为占位符
     abbr = {
         r"U\.S\.A\.": "USA_PROTECTED",
         r"U\.S\.": "US_PROTECTED",
@@ -60,7 +58,6 @@ def protect_abbreviations(text):
 
 
 def restore_abbreviations(sentences):
-    # 把占位符替换回真实缩写
     restore = {
         "USA_PROTECTED": "U.S.A.",
         "US_PROTECTED": "U.S.",
@@ -78,10 +75,20 @@ def restore_abbreviations(sentences):
 
 
 # --------------------------
+# 句子切分
+# --------------------------
+def split_into_sentences(text):
+    text = protect_abbreviations(text)
+    raw = nltk.sent_tokenize(text)
+    raw = restore_abbreviations(raw)
+    return [s.strip() for s in raw if len(s.strip()) > 1]
+
+
+# --------------------------
 # 解析 .story 文件
 # --------------------------
 def parse_story(file_path):
-    with open(file_path, "r", encoding="utf8") as f:
+    with open(file_path, "r", encoding="utf8", errors='ignore') as f:
         lines = f.readlines()
 
     article_lines = []
@@ -90,157 +97,142 @@ def parse_story(file_path):
 
     for line in lines:
         line = line.strip()
-
         if line == "@highlight":
             is_highlight = True
             continue
-
         if is_highlight:
-            if len(line) > 0:
-                highlights.append(line)
+            if len(line) > 0: highlights.append(line)
         else:
-            if len(line) > 0:
-                article_lines.append(line)
+            if len(line) > 0: article_lines.append(line)
 
     article = clean_text(" ".join(article_lines))
     highlights = [clean_text(h) for h in highlights]
-
     return article, highlights
 
 
 # --------------------------
-# 句子切分
+# [核心修改] 贪婪 ROUGE 标签对齐
 # --------------------------
-def split_into_sentences(text):
-    text = protect_abbreviations(text)
-    raw = nltk.sent_tokenize(text)
-    raw = restore_abbreviations(raw)
-
-    # 去除空句子
-    return [s.strip() for s in raw if len(s.strip()) > 1]
-
-
-# --------------------------
-# 标签对齐（相似度 ≥ 0.8）
-# --------------------------
-def get_sbert():
-    global _SBERT_MODEL
-    if _SBERT_MODEL is None:
-        _SBERT_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-    return _SBERT_MODEL
-
-
-def align_labels(sentences, highlights, 
-                 tfidf_threshold=0.1, 
-                 bert_threshold=0.65,
-                 max_candidates=10):
+def align_labels(sentences, highlights, max_oracle_sents=3):
     """
-    两阶段筛选标签：
-    第 1 阶段：TF-IDF 快速粗筛，选出可能是摘要句的 candidates
-    第 2 阶段：用 Sentence-BERT 精筛，提高语义匹配质量
+    使用 Greedy ROUGE 策略生成 Oracle Labels。
+    原理：每次选择能让当前 ROUGE 分数提升最大的一句话，直到达到数量限制或无法提升。
+    这是抽取式摘要的"金标准"做法。
     """
-
-    if len(sentences) == 0:
-        return []
-
-    if len(highlights) == 0:
+    if not sentences or not highlights:
         return [0] * len(sentences)
 
-    # -------- Stage 1: TF-IDF 粗筛 --------
-    vectorizer = TfidfVectorizer().fit(sentences + highlights)
-    sent_vecs = vectorizer.transform(sentences)      # (num_sent, dim)
-    high_vecs = vectorizer.transform(highlights)    # (num_highlight, dim)
+    # 将摘要列表拼接成参考文本
+    abstract_text = " ".join(highlights)
 
-    sim = cosine_similarity(sent_vecs, high_vecs)   # (num_sent × num_highlight)
-    max_sim = sim.max(axis=1)
+    selected_indices = []
+    current_summary_list = []
+    best_score = 0.0
 
-    # 选出可能是摘要句的候选索引（最多 max_candidates 条）
-    candidates = [i for i, s in enumerate(max_sim) if s >= tfidf_threshold]
+    # 循环选择句子
+    while len(selected_indices) < max_oracle_sents:
+        best_gain = 0.0
+        best_idx = -1
 
-    # 限制候选数量，防止某些长文章太多句子
-    if len(candidates) > max_candidates:
-        # 选相似度最高的前 max_candidates 条
-        top_indices = sorted(range(len(candidates)),
-                             key=lambda i: max_sim[candidates[i]],
-                             reverse=True)[:max_candidates]
-        candidates = [candidates[i] for i in top_indices]
+        for i, sent in enumerate(sentences):
+            if i in selected_indices:
+                continue
 
-    # 初始化所有句子为 0
+            # 尝试加入这句话
+            trial_summary = " ".join(current_summary_list + [sent])
+
+            # 计算 ROUGE 分数
+            scores = _ROUGE_SCORER.score(abstract_text, trial_summary)
+            # 综合指标：通常使用 ROUGE-1 + ROUGE-2 的平均或总和
+            current_score = scores['rouge1'].fmeasure + scores['rouge2'].fmeasure
+
+            # 看看是否有提升
+            if current_score > best_score:
+                gain = current_score - best_score
+                if gain > best_gain:
+                    best_gain = gain
+                    best_idx = i
+
+        # 如果找到了能提升分数的句子
+        if best_idx != -1:
+            best_score += best_gain
+            selected_indices.append(best_idx)
+            current_summary_list.append(sentences[best_idx])
+        else:
+            # 如果遍历一圈都无法提升分数，提前结束
+            break
+
+    # 生成 0/1 标签
     labels = [0] * len(sentences)
-
-    # 如果一个候选句都没有，就全 0
-    if len(candidates) == 0:
-        return labels
-
-    # -------- Stage 2: Sentence-BERT 精筛 --------
-
-    model = get_sbert()
-
-    # 只对候选句编码，提高速度
-    cand_sentences = [sentences[i] for i in candidates]
-    sent_embs = model.encode(cand_sentences, convert_to_tensor=True)
-    high_embs = model.encode(highlights, convert_to_tensor=True)
-
-    cos = util.cos_sim(sent_embs, high_embs)
-
-    for idx, sims in zip(candidates, cos):
-        if sims.max().item() >= bert_threshold:
-            labels[idx] = 1
+    for idx in selected_indices:
+        labels[idx] = 1
 
     return labels
 
 
 # --------------------------
-# 加载所有 story 文件
+# 加载与处理流程
 # --------------------------
-def load_all_stories(paths):
+def load_and_process_stories(paths):
     files = []
     for p in paths:
-        files.extend(glob.glob(p + "*.story"))
+        files.extend(glob.glob(os.path.join(p, "*.story")))
 
     dataset = []
 
+    # 进度条
     for fp in tqdm(files, desc="Processing stories"):
-        article, highlights = parse_story(fp)
+        try:
+            article, highlights = parse_story(fp)
 
-        # 跳过无正文的 story
-        if len(article.strip()) == 0:
+            if len(article.strip()) == 0 or len(highlights) == 0:
+                continue
+
+            sentences = split_into_sentences(article)
+            if len(sentences) == 0:
+                continue
+
+            # 生成高质量标签
+            labels = align_labels(sentences, highlights)
+
+            # 如果全是0，或者全是1，通常是异常数据，可以考虑过滤（这里保留以防万一）
+            if sum(labels) == 0:
+                # 极其罕见的情况，可以做一个保底：选前三句
+                labels[:min(3, len(labels))] = [1] * min(3, len(labels))
+
+            dataset.append({
+                "id": os.path.basename(fp),
+                "sentences": sentences,
+                "labels": labels,
+                "highlights": highlights
+            })
+        except Exception as e:
+            print(f"Error processing {fp}: {e}")
             continue
-
-        sentences = split_into_sentences(article)
-        if len(sentences) == 0:
-            continue
-
-        labels = align_labels(sentences, highlights)
-
-        dataset.append({
-            "id": os.path.basename(fp),
-            "sentences": sentences,
-            "labels": labels,
-            "highlights": highlights
-        })
 
     return dataset
 
 
-# --------------------------
-# 保存 JSON
-# --------------------------
 def save_json(data, path):
     with open(path, "w", encoding="utf8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# --------------------------
-# 主入口
-# --------------------------
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print("Loading raw stories...")
-    data = load_all_stories([RAW_CNN_PATH, RAW_DM_PATH])
+    print("Loading and processing raw stories with Greedy ROUGE...")
+    # 检查路径是否存在
+    if not os.path.exists(RAW_CNN_PATH) or not os.path.exists(RAW_DM_PATH):
+        print("Error: Raw data paths not found. Please check RAW_CNN_PATH and RAW_DM_PATH.")
+        return
 
+    data = load_and_process_stories([RAW_CNN_PATH, RAW_DM_PATH])
     print(f"Total usable samples = {len(data)}")
+
+    if len(data) == 0:
+        print("No data found!")
+        return
 
     # 划分 train / val / test
     train_val, test = train_test_split(data, test_size=0.1, random_state=42)
@@ -248,11 +240,11 @@ def main():
 
     print(f"Train: {len(train)}, Val: {len(val)}, Test: {len(test)}")
 
-    save_json(train, OUTPUT_DIR + "train.json")
-    save_json(val, OUTPUT_DIR + "val.json")
-    save_json(test, OUTPUT_DIR + "test.json")
+    save_json(train, os.path.join(OUTPUT_DIR, "train.json"))
+    save_json(val, os.path.join(OUTPUT_DIR, "val.json"))
+    save_json(test, os.path.join(OUTPUT_DIR, "test.json"))
 
-    print("Preprocessing completed!")
+    print("Preprocessing completed! Labels are now optimized for ROUGE.")
 
 
 if __name__ == "__main__":
