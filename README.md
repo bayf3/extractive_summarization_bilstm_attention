@@ -37,4 +37,10 @@ extractive-summarization-bilstm-attention/
 ├── requirements.txt
 └── README.md
 ```
+Train
+```bash
+cd ~/codes/NLP/extractive_summarization_bilstm_attention
+python src/train.py --train_json ./data/labeled_stories_mini/train.json --glove_path ~/codes/NLP/embeddings/glove6b/glove.6B.300d.txt --epochs 5 --batch_size 8 --save_path checkpoints/model.pt
+```
+
 

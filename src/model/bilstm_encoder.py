@@ -22,6 +22,7 @@ class BiLSTMEncoder(nn.Module):
             bidirectional=True
         )
         self.input_dropout = nn.Dropout(dropout)
+        self.output_dropout = nn.Dropout(dropout)
 
     def forward(self, x, lengths):
         """
@@ -39,4 +40,5 @@ class BiLSTMEncoder(nn.Module):
         forward_h = h_n[0]  # [B, hidden]
         backward_h = h_n[1]  # [B, hidden]
         sent_vec = torch.cat([forward_h, backward_h], dim=-1)  # [B, hidden*2]
+        sent_vec = self.output_dropout(sent_vec)
         return sent_vec

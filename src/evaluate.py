@@ -82,7 +82,11 @@ def main():
     print(f"Loading data from {args.data_json}...")
     # Dataset 会自动构建词表，这里为了简单直接build。
     # 严谨做法是加载训练时的 vocab，但作为作业Demo，直接build影响不大，或者保存vocab.pkl
+<<<<<<< HEAD
     dataset = SummDataset(args.data_json, build_vocab=True)
+=======
+    dataset = SummDataset(args.data_json, build_vocab=False, load_vocab_path="./vocab/vocab.pkl")
+>>>>>>> main
 
     # 关键：collate_fn 必须是我们修改过能返回 'raw_sents' 的那个版本
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn)

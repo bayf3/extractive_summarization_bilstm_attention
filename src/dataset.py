@@ -6,6 +6,7 @@ import torch
 from torch.utils.data import Dataset
 from collections import Counter
 import random
+import pickle
 
 try:
     # prefer nltk tokenizer for english
@@ -26,15 +27,28 @@ class SummDataset(Dataset):
       { "id": "...", "sentences": [...], "labels": [...], "highlights": [...] }
     Tokenization is performed on the fly during __getitem__ or in collate.
     """
-    def __init__(self, json_path, max_sent_len=100, min_freq=1, build_vocab=True, vocab=None):
+    def __init__(self, json_path, 
+                 max_sent_len=100, 
+                 min_freq=1,
+                 vocab=None, 
+                 build_vocab=True, 
+                 save_vocab_path=None,
+                 load_vocab_path=None):
         self.data = self._load(json_path)
         self.max_sent_len = max_sent_len
-        if build_vocab:
-            self.vocab = self.build_vocab(self.data, min_freq=min_freq)
-        else:
-            if vocab is None:
-                raise ValueError("vocab required if build_vocab=False")
+        if vocab:
             self.vocab = vocab
+        elif build_vocab:
+            self.vocab = self.build_vocab(self.data, min_freq=min_freq)
+            if save_vocab_path:
+                with open(save_vocab_path, 'wb') as f:
+                    pickle.dump(self.vocab, f)
+        else:
+            if load_vocab_path:
+                with open(load_vocab_path, 'rb') as f:
+                    self.vocab = pickle.load(f)
+            else:
+                raise ValueError("load_vocab_path required if build_vocab=False")
 
     def _load(self, path):
         with open(path, 'r', encoding='utf8') as f:
@@ -98,8 +112,12 @@ def collate_fn(batch, pad_idx=0):
     length_tensors = []
     label_tensors = []
     highlights = []
+<<<<<<< HEAD
 
     # [关键修改] 新增列表用于存储原始文本
+=======
+    # 新增列表用于存储原始文本
+>>>>>>> main
     raw_sents_list = []
 
     for item in batch:
@@ -107,7 +125,11 @@ def collate_fn(batch, pad_idx=0):
         sent_ids = item["sent_ids"]
         sent_lens = item["sent_lens"]
 
+<<<<<<< HEAD
         # [关键修改] 获取 Dataset 中的原始句子列表
+=======
+        #  获取 Dataset 中的原始句子列表
+>>>>>>> main
         raw_sents_list.append(item.get("sentences", []))
 
         if len(sent_ids) == 0:
@@ -133,5 +155,9 @@ def collate_fn(batch, pad_idx=0):
         "lengths": length_tensors,
         "labels": label_tensors,
         "highlights": highlights,
+<<<<<<< HEAD
         "raw_sents": raw_sents_list  # [关键修改] 返回这个关键数据！
+=======
+        "raw_sents": raw_sents_list  # 返回这个关键数据！
+>>>>>>> main
     }
