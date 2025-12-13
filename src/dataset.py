@@ -88,41 +88,43 @@ class SummDataset(Dataset):
             "highlights": item.get("highlights", [])
         }
 
+
 def collate_fn(batch, pad_idx=0):
     """
-    batch: list of dataset items (one article per element).
-    We return a list-based batch:
-      {
-        "ids": [...],
-        "word_ids": [ LongTensor(num_sent, max_len) for each article ],
-        "lengths": [ LongTensor(num_sent) for each article ],
-        "labels": [ FloatTensor(num_sent) for each article ],
-        "highlights": [...]
-      }
+    修改点：增加了 raw_sents 的传递，供推理模块使用
     """
     ids = []
     word_id_tensors = []
     length_tensors = []
     label_tensors = []
     highlights = []
+
+    # [关键修改] 新增列表用于存储原始文本
+    raw_sents_list = []
+
     for item in batch:
         ids.append(item["id"])
         sent_ids = item["sent_ids"]
         sent_lens = item["sent_lens"]
+
+        # [关键修改] 获取 Dataset 中的原始句子列表
+        raw_sents_list.append(item.get("sentences", []))
+
         if len(sent_ids) == 0:
-            # empty article
-            word_id_tensors.append(torch.zeros((0,0), dtype=torch.long))
+            word_id_tensors.append(torch.zeros((0, 0), dtype=torch.long))
             length_tensors.append(torch.zeros((0,), dtype=torch.long))
             label_tensors.append(torch.zeros((0,), dtype=torch.float))
             highlights.append(item.get("highlights", []))
             continue
+
         max_len = max(len(s) for s in sent_ids)
         padded = []
         for s in sent_ids:
             padded.append(s + [pad_idx] * (max_len - len(s)))
-        word_id_tensors.append(torch.tensor(padded, dtype=torch.long))  # [num_sent, max_len]
+
+        word_id_tensors.append(torch.tensor(padded, dtype=torch.long))
         length_tensors.append(torch.tensor(sent_lens, dtype=torch.long))
-        label_tensors.append(torch.tensor(item.get("labels", [0]*len(sent_ids)), dtype=torch.float))
+        label_tensors.append(torch.tensor(item.get("labels", [0] * len(sent_ids)), dtype=torch.float))
         highlights.append(item.get("highlights", []))
 
     return {
@@ -130,5 +132,6 @@ def collate_fn(batch, pad_idx=0):
         "word_ids": word_id_tensors,
         "lengths": length_tensors,
         "labels": label_tensors,
-        "highlights": highlights
+        "highlights": highlights,
+        "raw_sents": raw_sents_list  # [关键修改] 返回这个关键数据！
     }
