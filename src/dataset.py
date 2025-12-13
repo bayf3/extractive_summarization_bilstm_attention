@@ -1,24 +1,46 @@
 # src/dataset.py
 import json
-import os
-from typing import List, Dict
 import torch
 from torch.utils.data import Dataset
 from collections import Counter
-import random
 
+# ==========================================
+# [升级] 使用 spaCy 强力分词器
+# ==========================================
 try:
-    # prefer nltk tokenizer for english
-    import nltk
-    nltk.data.find('tokenizers/punkt')
-    from nltk.tokenize import word_tokenize
-except Exception:
-    # fallback to simple split
-    def word_tokenize(x):
-        return x.split()
+    import spacy
+
+    # 加载英文模型，禁用 parser, ner 等组件以极大提升速度
+    # 如果报错，请在终端运行: python -m spacy download en_core_web_sm
+    spacy_nlp = spacy.load("en_core_web_sm", disable=["parser", "ner", "tagger", "lemmatizer"])
+except ImportError:
+    print("[Error] 请安装 spacy: pip install spacy")
+    exit()
+except OSError:
+    print("[Error] 请下载 spacy 模型: python -m spacy download en_core_web_sm")
+    exit()
 
 PAD = "<pad>"
 UNK = "<unk>"
+
+
+def word_tokenize(text):
+    """
+    使用 spaCy 分词 (针对 GloVe 840B 优化)
+    自动处理: 标点粘连 (apple.), 缩写 (don't), 奇怪符号
+    """
+    if not isinstance(text, str):
+        return []
+
+    # 1. 基础清洗: 去除多余的 Tab、换行、连续空格
+    text = " ".join(text.split())
+
+    # 2. spaCy 智能分词
+    doc = spacy_nlp(text)
+
+    # 3. 返回 Token 文本列表
+    return [token.text for token in doc]
+
 
 class SummDataset(Dataset):
     """
@@ -26,6 +48,7 @@ class SummDataset(Dataset):
       { "id": "...", "sentences": [...], "labels": [...], "highlights": [...] }
     Tokenization is performed on the fly during __getitem__ or in collate.
     """
+
     def __init__(self, json_path, max_sent_len=100, min_freq=1, build_vocab=True, vocab=None):
         self.data = self._load(json_path)
         self.max_sent_len = max_sent_len
@@ -42,13 +65,17 @@ class SummDataset(Dataset):
         return data
 
     def build_vocab(self, data, min_freq=1):
+        print("Building vocab using spaCy (keeping case)...")
         counter = Counter()
         for item in data:
             for s in item.get("sentences", []):
-                toks = word_tokenize(s.lower())
+                # [修改点 1] 使用 spaCy 分词，并且去掉了 .lower()
+                # 这样 GloVe 840B 里的 "Apple" 和 "iPhone" 都能被正确识别
+                toks = word_tokenize(s)
                 counter.update(toks)
+
         # special tokens
-        vocab = {PAD:0, UNK:1}
+        vocab = {PAD: 0, UNK: 1}
         idx = 2
         for tok, freq in counter.most_common():
             if freq < min_freq:
@@ -64,7 +91,8 @@ class SummDataset(Dataset):
         return len(self.data)
 
     def sentence_to_ids(self, sentence):
-        toks = word_tokenize(sentence.lower())
+        # [修改点 2] 同样去掉了 .lower()
+        toks = word_tokenize(sentence)
         toks = toks[:self.max_sent_len]
         ids = [self.vocab.get(t, self.vocab.get(UNK)) for t in toks]
         return ids, len(ids)
@@ -87,6 +115,7 @@ class SummDataset(Dataset):
             "labels": labels,
             "highlights": item.get("highlights", [])
         }
+
 
 def collate_fn(batch, pad_idx=0):
     """
@@ -111,7 +140,7 @@ def collate_fn(batch, pad_idx=0):
         sent_lens = item["sent_lens"]
         if len(sent_ids) == 0:
             # empty article
-            word_id_tensors.append(torch.zeros((0,0), dtype=torch.long))
+            word_id_tensors.append(torch.zeros((0, 0), dtype=torch.long))
             length_tensors.append(torch.zeros((0,), dtype=torch.long))
             label_tensors.append(torch.zeros((0,), dtype=torch.float))
             highlights.append(item.get("highlights", []))
@@ -122,7 +151,7 @@ def collate_fn(batch, pad_idx=0):
             padded.append(s + [pad_idx] * (max_len - len(s)))
         word_id_tensors.append(torch.tensor(padded, dtype=torch.long))  # [num_sent, max_len]
         length_tensors.append(torch.tensor(sent_lens, dtype=torch.long))
-        label_tensors.append(torch.tensor(item.get("labels", [0]*len(sent_ids)), dtype=torch.float))
+        label_tensors.append(torch.tensor(item.get("labels", [0] * len(sent_ids)), dtype=torch.float))
         highlights.append(item.get("highlights", []))
 
     return {

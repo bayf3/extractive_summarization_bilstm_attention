@@ -26,7 +26,8 @@ extractive-summarization-bilstm-attention/
 │ ├── train.py 
 │ ├── evaluate.py # ROUGE 计算
 │ └── utils.py
-│
+│ └── dataset.py
+
 ├── experiments/
 │ ├── exp1/ # 实验一
 │ ├── exp2/ # 实验二
