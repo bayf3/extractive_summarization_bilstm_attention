@@ -130,62 +130,48 @@ def get_sbert():
     return _SBERT_MODEL
 
 
-def align_labels(sentences, highlights, 
-                 tfidf_threshold=0.1, 
-                 bert_threshold=0.65,
-                 max_candidates=10):
+def align_labels(sentences, highlights,
+                      tfidf_threshold=0.05,
+                      bert_threshold=0.7,
+                      max_candidates=10):
     """
-    两阶段筛选标签：
-    第 1 阶段：TF-IDF 快速粗筛，选出可能是摘要句的 candidates
-    第 2 阶段：用 Sentence-BERT 精筛，提高语义匹配质量
+    标签对齐函数：
+    1. TF-IDF 粗筛候选句，数量限制 max_candidates
+    2. SBERT 精筛，保证每个摘要句匹配到一个候选句
+    输出长度 = len(sentences) 的 0/1 列表
     """
-
-    if len(sentences) == 0:
-        return []
-
-    if len(highlights) == 0:
-        return [0] * len(sentences)
+    labels = [0] * len(sentences)
+    if len(sentences) == 0 or len(highlights) == 0:
+        return labels
 
     # -------- Stage 1: TF-IDF 粗筛 --------
     vectorizer = TfidfVectorizer().fit(sentences + highlights)
-    sent_vecs = vectorizer.transform(sentences)      # (num_sent, dim)
-    high_vecs = vectorizer.transform(highlights)    # (num_highlight, dim)
-
-    sim = cosine_similarity(sent_vecs, high_vecs)   # (num_sent × num_highlight)
+    sent_vecs = vectorizer.transform(sentences)
+    high_vecs = vectorizer.transform(highlights)
+    sim = cosine_similarity(sent_vecs, high_vecs)
     max_sim = sim.max(axis=1)
 
-    # 选出可能是摘要句的候选索引（最多 max_candidates 条）
+    # 候选句索引（阈值 + 数量限制）
     candidates = [i for i, s in enumerate(max_sim) if s >= tfidf_threshold]
-
-    # 限制候选数量，防止某些长文章太多句子
     if len(candidates) > max_candidates:
-        # 选相似度最高的前 max_candidates 条
-        top_indices = sorted(range(len(candidates)),
-                             key=lambda i: max_sim[candidates[i]],
-                             reverse=True)[:max_candidates]
-        candidates = [candidates[i] for i in top_indices]
+        # 按相似度排序，选前 max_candidates 个
+        candidates = sorted(candidates, key=lambda i: max_sim[i], reverse=True)[:max_candidates]
 
-    # 初始化所有句子为 0
-    labels = [0] * len(sentences)
-
-    # 如果一个候选句都没有，就全 0
     if len(candidates) == 0:
         return labels
 
-    # -------- Stage 2: Sentence-BERT 精筛 --------
-
+    # -------- Stage 2: SBERT 精筛 --------
     model = get_sbert()
-
-    # 只对候选句编码，提高速度
     cand_sentences = [sentences[i] for i in candidates]
     sent_embs = model.encode(cand_sentences, convert_to_tensor=True)
     high_embs = model.encode(highlights, convert_to_tensor=True)
+    cos_sim_matrix = util.cos_sim(sent_embs, high_embs)  # [num_cand, num_highlight]
 
-    cos = util.cos_sim(sent_embs, high_embs)
-
-    for idx, sims in zip(candidates, cos):
-        if sims.max().item() >= bert_threshold:
-            labels[idx] = 1
+    # 对每个摘要句，贪心选相似度最高的候选句
+    for j in range(cos_sim_matrix.size(1)):
+        sims = cos_sim_matrix[:, j]
+        best_idx = torch.argmax(sims).item()
+        labels[candidates[best_idx]] = 1
 
     return labels
 
@@ -193,10 +179,13 @@ def align_labels(sentences, highlights,
 # --------------------------
 # 加载所有 story 文件
 # --------------------------
-def load_all_stories(paths):
+def load_all_stories(paths, max_stories=None):
     files = []
     for p in paths:
         files.extend(glob.glob(p + "*.story"))
+
+    if max_stories is not None:
+        files = files[:max_stories] 
 
     dataset = []
 
@@ -239,7 +228,6 @@ def main():
 
     print("Loading raw stories...")
     data = load_all_stories([RAW_CNN_PATH, RAW_DM_PATH])
-
     print(f"Total usable samples = {len(data)}")
 
     # 划分 train / val / test
