@@ -12,8 +12,12 @@ class GloveEmbedding(nn.Module):
     GloVe Embedding layer.
     - vocab: mapping word->idx
     - embedding matrix: initialized from glove_path if provided, else random.
+
+    embed_trainable: bool, optional (default=True)
+    Whether to fine-tune GloVe embeddings. 
+    Set to False or True to fine-tune GloVe embeddings.
     """
-    def __init__(self, vocab, embedding_dim=300, glove_path=None, trainable=True):
+    def __init__(self, vocab, embedding_dim=300, glove_path=None, trainable=False):
         super().__init__()
         self.vocab = vocab
         self.vocab_size = len(vocab)
@@ -49,6 +53,8 @@ class GloveEmbedding(nn.Module):
                     weight[idx] = glove[w]
                     matched += 1
             print(f"Matched {matched}/{len(self.vocab)} words in GloVe.")
+            # unk vector as mean of all vectors
+            weight[1] = weight.mean(axis=0)
         else:
             if glove_path is not None:
                 print("Warning: glove_path provided but file not found:", glove_path)

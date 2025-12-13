@@ -11,9 +11,13 @@ venv/
 .ipynb_checkpoints/
 
 # ---- Data directories ----
+<<<<<<< HEAD
 data/raw/
 data/processed/*.tmp
 data/processed/
+=======
+data/
+>>>>>>> main
 *.csv
 *.tsv
 
@@ -28,3 +32,5 @@ Thumbs.db
 
 # ---- data ----
 .raw
+checkpoints/
+vocab/

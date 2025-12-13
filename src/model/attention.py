@@ -16,6 +16,8 @@ class AdditiveAttention(nn.Module):
         self.v = nn.Linear(hidden_dim, 1, bias=False)
         # query vector parameter
         self.query = nn.Parameter(torch.randn(hidden_dim))
+        # self.query = nn.Parameter(torch.empty(hidden_dim))
+        # nn.init.xavier_uniform_(self.query.data)
 
     def forward(self, sent_vecs):
         """
@@ -30,5 +32,5 @@ class AdditiveAttention(nn.Module):
         q = self.query.unsqueeze(0).expand(sent_vecs.size(0), -1)  # [N, H]
         u = torch.tanh(self.W(sent_vecs) + self.U(q))
         scores = self.v(u).squeeze(-1)  # [N]
-        weights = F.softmax(scores, dim=0)
-        return weights
+        # weights = F.softmax(scores, dim=0)
+        return scores  # 返回 logits 以供二分类使用
