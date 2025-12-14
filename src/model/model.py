@@ -14,12 +14,12 @@ class ExtractiveSummarizer(nn.Module):
     produce logits for each sentence (higher -> more likely to be summary sentence).
     """
 
-    def __init__(self, vocab, embed_dim=300, hidden_size=256, glove_path=None, embed_trainable=False):
+    def __init__(self, vocab, embed_dim=300, hidden_size=256, glove_path=None, embed_trainable=True):
         super().__init__()
         self.embedding = GloveEmbedding(vocab, embedding_dim=embed_dim, glove_path=glove_path, trainable=embed_trainable)
         self.encoder = BiLSTMEncoder(embed_dim, hidden_size)
-        self.attention = AdditiveAttention(hidden_dim * 2)
-        self.classifier = nn.Linear(hidden_size * 2, 1)
+        self.attention = AdditiveAttention(hidden_size * 2)
+        # self.classifier = nn.Linear(hidden_size * 2, 1)
 
     def forward(self, word_id_tensor, lengths):
         """
@@ -35,7 +35,8 @@ class ExtractiveSummarizer(nn.Module):
         embeds = self.embedding(word_id_tensor)  # [num_sent, max_len, embed_dim]
         sent_vecs = self.encoder(embeds, lengths)  # [num_sent, hidden*2]
         # attention weights (unused in loss but useful for inference/selection)
-        attn = self.attention(sent_vecs)  # [num_sent]
-        logits = self.classifier(sent_vecs).squeeze(-1)  # [num_sent]
+        logits = self.attention(sent_vecs)  # [num_sent]
+        # logits = self.classifier(sent_vecs).squeeze(-1)  # [num_sent]
+        atten_weights = F.softmax(logits, dim=0)        # 注意力权重
         # Optionally combine attn and logits; here we keep logits as classification scores.
-        return logits, attn
+        return logits, atten_weights
